@@ -1,70 +1,125 @@
 # app/outlook_reader.py
 import win32com.client
 import pythoncom
-from app.summarizer import summarize_email
+import hashlib
+import json
+from datetime import datetime, timedelta
+from app.database import SessionLocal, EmailModel
+
 
 def get_inbox_subfolders():
     """Return the names of subfolders under Inbox"""
     pythoncom.CoInitialize()
     try:
         outlook = win32com.client.Dispatch("Outlook.Application").GetNamespace("MAPI")
-        inbox = outlook.GetDefaultFolder(6)  # 6 = Inbox
+        inbox = outlook.GetDefaultFolder(6)
         subfolders = [folder.Name for folder in inbox.Folders]
         return subfolders
     finally:
         pythoncom.CoUninitialize()
 
-def get_recent_emails(limit=10, folder_name=None):
-    """Return recent emails with summary, action items, and priority"""
+
+def fetch_and_store_emails(limit: int = 3000, days: int = 90):
+    """
+    Fetch emails from Outlook and store in SQLite DB.
+    Skips emails already stored (no duplicates).
+    """
     pythoncom.CoInitialize()
     try:
         outlook = win32com.client.Dispatch("Outlook.Application").GetNamespace("MAPI")
-
-        # Select folder
-        inbox = outlook.GetDefaultFolder(6)  # Default Inbox
-        folder = inbox
-
-        if folder_name:
-            try:
-                # Try to find selected subfolder under Inbox
-                folder = inbox.Folders[folder_name]
-            except Exception:
-                # Fallback to Inbox if folder not found
-                folder = inbox
-
-        messages = folder.Items
+        inbox = outlook.GetDefaultFolder(6)
+        messages = inbox.Items
         messages.Sort("[ReceivedTime]", True)  # Sort newest first
 
-        emails = []
+        cutoff_date = datetime.now() - timedelta(days=days)
+        db = SessionLocal()
+        saved_count = 0
 
         for i, message in enumerate(messages):
             if i >= limit:
                 break
+            try:
+                # Stop when emails are older than cutoff date
+                received_raw = getattr(message, "ReceivedTime", None)
+                if received_raw is None:
+                    continue
 
-            # Safely read Outlook fields
-            subject = getattr(message, "Subject", "") or "No Subject"
-            body = getattr(message, "Body", "") or ""
+                received_dt = datetime(
+                    received_raw.year, received_raw.month, received_raw.day,
+                    received_raw.hour, received_raw.minute, received_raw.second
+                )
+                if received_dt < cutoff_date:
+                    break
 
-            sender = getattr(message, "SenderName", "") or "Unknown Sender"
+                subject      = getattr(message, "Subject", "") or "No Subject"
+                sender       = getattr(message, "SenderName", "") or "Unknown"
+                sender_email = getattr(message, "SenderEmailAddress", "") or ""
+                body         = getattr(message, "Body", "") or ""
 
-            received_time_raw = getattr(message, "ReceivedTime", None)
-            received_time = (
-                str(received_time_raw) if received_time_raw else "Unknown Time"
-            )
+                # Generate unique ID from subject + sender + time
+                unique_str = f"{subject}{sender}{received_raw}"
+                email_id   = hashlib.md5(unique_str.encode()).hexdigest()
 
-            # Summarize email using Ollama
-            summary_data = summarize_email(subject, body)
+                # Skip if already in DB
+                if db.query(EmailModel).filter(EmailModel.id == email_id).first():
+                    continue
 
-            emails.append({
-                "subject": subject,
-                "sender": sender,
-                "received_time": received_time,
-                "summary": summary_data.get("summary", "N/A"),
-                "action_items": summary_data.get("action_items", []),
-                "priority": summary_data.get("priority", "N/A"),
-            })
+                email = EmailModel(
+                    id           = email_id,
+                    subject      = subject,
+                    sender       = sender,
+                    sender_email = sender_email,
+                    body         = body[:3000],
+                    summary      = "",           # skip summarization for now
+                    action_items = json.dumps([]),
+                    priority     = "",
+                    received_time= str(received_raw)
+                )
+                db.add(email)
+                saved_count += 1
 
-        return emails
+            except Exception as e:
+                print(f"Error processing email: {e}")
+                continue
+
+        db.commit()
+        db.close()
+        return saved_count
 
     finally:
         pythoncom.CoUninitialize()
+
+
+def get_emails_from_db(limit: int = 20, skip: int = 0):
+    """
+    Return emails from SQLite DB (fast, no Outlook needed).
+    """
+    db = SessionLocal()
+    rows = (
+        db.query(EmailModel)
+          .order_by(EmailModel.received_time.desc())
+          .offset(skip)
+          .limit(limit)
+          .all()
+    )
+    db.close()
+
+    return [
+        {
+            "subject":      r.subject,
+            "sender":       r.sender,
+            "received_time":r.received_time,
+            "summary":      r.summary,
+            "action_items": json.loads(r.action_items) if r.action_items else [],
+            "priority":     r.priority,
+        }
+        for r in rows
+    ]
+
+
+def get_recent_emails(limit=10, folder_name=None):
+    """
+    Original function kept for compatibility.
+    Now reads from DB instead of Outlook directly.
+    """
+    return get_emails_from_db(limit=limit)

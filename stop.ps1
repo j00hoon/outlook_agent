@@ -1,28 +1,17 @@
 # ========================================
-# stop.ps1
-# Stop backend + frontend
+# stop.ps1 - Stop backend + frontend
 # ========================================
 
-Write-Host "Stopping backend and frontend..."
+Write-Host ""
+Write-Host "Stopping all services..." -ForegroundColor Yellow
 
-# Stop uvicorn / FastAPI backend
-Get-CimInstance Win32_Process |
-Where-Object {
-    $_.CommandLine -match "uvicorn app.main:app"
-} |
-ForEach-Object {
-    Stop-Process -Id $_.ProcessId -Force
-    Write-Host "Stopped backend process ID:" $_.ProcessId
-}
+# FastAPI (uvicorn) 종료
+Get-Process -Name "python" -ErrorAction SilentlyContinue | Stop-Process -Force
+Write-Host "  Backend stopped" -ForegroundColor Green
 
-# Stop Next.js frontend
-Get-CimInstance Win32_Process |
-Where-Object {
-    $_.CommandLine -match "next dev"
-} |
-ForEach-Object {
-    Stop-Process -Id $_.ProcessId -Force
-    Write-Host "Stopped frontend process ID:" $_.ProcessId
-}
+# Next.js (node) 종료
+Get-Process -Name "node" -ErrorAction SilentlyContinue | Stop-Process -Force
+Write-Host "  Frontend stopped" -ForegroundColor Green
 
-Write-Host "All services stopped."
+Write-Host "All services stopped." -ForegroundColor Cyan
+Write-Host ""

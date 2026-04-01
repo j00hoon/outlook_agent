@@ -19,19 +19,41 @@ def get_inbox_subfolders():
         pythoncom.CoUninitialize()
 
 
-def fetch_and_store_emails(limit: int = 3000, days: int = 90):
+def _get_target_folder(namespace, folder_name=None):
+    inbox = namespace.GetDefaultFolder(6)
+
+    if not folder_name:
+        return inbox
+
+    for folder in inbox.Folders:
+        if folder.Name.lower() == folder_name.lower():
+            return folder
+
+    raise ValueError(f"Folder '{folder_name}' was not found under Inbox.")
+
+
+def fetch_and_store_emails(
+    limit: int = 3000,
+    days: int = 90,
+    folder_name=None,
+    last_sync_time=None,
+):
     """
-    Fetch emails from Outlook and store in SQLite DB.
+    Fetch emails from an Inbox folder in Outlook and store in SQLite DB.
     Skips emails already stored (no duplicates).
     """
     pythoncom.CoInitialize()
     try:
         outlook = win32com.client.Dispatch("Outlook.Application").GetNamespace("MAPI")
-        inbox = outlook.GetDefaultFolder(6)
-        messages = inbox.Items
+        target_folder = _get_target_folder(outlook, folder_name)
+        messages = target_folder.Items
         messages.Sort("[ReceivedTime]", True)  # Sort newest first
 
         cutoff_date = datetime.now() - timedelta(days=days)
+        sync_cutoff = None
+        if last_sync_time is not None:
+            sync_cutoff = last_sync_time.astimezone().replace(tzinfo=None)
+
         db = SessionLocal()
         saved_count = 0
 
@@ -48,6 +70,8 @@ def fetch_and_store_emails(limit: int = 3000, days: int = 90):
                     received_raw.year, received_raw.month, received_raw.day,
                     received_raw.hour, received_raw.minute, received_raw.second
                 )
+                if sync_cutoff and received_dt <= sync_cutoff:
+                    break
                 if received_dt < cutoff_date:
                     break
 

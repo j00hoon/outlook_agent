@@ -1,13 +1,38 @@
-# app/vector_store.py
+import os
+from pathlib import Path
+
 import chromadb
 from chromadb.utils import embedding_functions
 from app.database import SessionLocal, EmailModel
 
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+
 # Persistent ChromaDB stored in backend/chroma_db folder
 chroma_client = chromadb.PersistentClient(path="./chroma_db")
 
+DEFAULT_MODEL_DIR = (
+    Path(__file__).resolve().parents[1]
+    / "models"
+    / "paraphrase-multilingual-MiniLM-L12-v2"
+)
+
+
+def _resolve_embedding_model_path() -> str:
+    configured_path = os.getenv("EMBEDDING_MODEL_PATH")
+    model_path = Path(configured_path).expanduser() if configured_path else DEFAULT_MODEL_DIR
+
+    if not model_path.exists():
+        raise FileNotFoundError(
+            f"Embedding model not found: {model_path}. "
+            "Download the model into backend/models or set EMBEDDING_MODEL_PATH."
+        )
+
+    return str(model_path)
+
+
 embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
-    model_name="paraphrase-multilingual-MiniLM-L12-v2"  # supports Korean + English
+    model_name=_resolve_embedding_model_path()  # supports Korean + English
 )
 
 collection = chroma_client.get_or_create_collection(
